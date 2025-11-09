@@ -27,4 +27,8 @@ class SensorManager {
     fun setSensor(sensor: LocationDataSource) {
         _dataSource = sensor
     }
+
+    fun getSensor(): LocationDataSource? {
+        return _dataSource
+    }
 }
