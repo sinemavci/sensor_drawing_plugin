@@ -5,7 +5,6 @@ import android.content.Context
 import android.graphics.*
 import android.os.Build
 import android.util.AttributeSet
-import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -22,6 +21,7 @@ import com.kotlin.native_drawing_plugin.tool.PaintToolFactory
 import com.kotlin.native_drawing_plugin.tool.PenTool
 import java.io.File
 import java.io.FileOutputStream
+import androidx.core.graphics.scale
 
 sealed class DrawAction {
     data class StrokeAction(val path: Path, val paint: Paint) : DrawAction()
@@ -40,7 +40,9 @@ class PaintBoxView @JvmOverloads constructor(
 
     private var isPaintBoxViewEnable = true
 
-    private var strokeColor: Int = Color.BLUE
+    private var strokeColor: Int = Color.BLACK
+
+    private var topInsetPx = 0
 
     // Default pai
     private val paintDefaults = Paint().apply {
@@ -73,20 +75,25 @@ class PaintBoxView @JvmOverloads constructor(
 
     init {
         holder.addCallback(this)
+        setOnApplyWindowInsetsListener { _, insets ->
+            topInsetPx = insets.systemWindowInsetTop
+            insets
+        }
     }
+
+    var surfaceWidth = width
+    var surfaceHeight = height
 
     // -------------------------------------------------------------------------
     // Surface lifecycle
     // -------------------------------------------------------------------------
     override fun surfaceCreated(holder: SurfaceHolder) {
-        Log.e("PaintBoxView", "surfaceCreated")
-
+        surfaceWidth = width
+        surfaceHeight = height
         // Initialize offscreen bitmap based on actual surface size
-        val w = width
-        val h = height
 
-        if (w > 0 && h > 0) {
-            extraBitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        if (surfaceWidth > 0 && surfaceHeight > 0) {
+            extraBitmap = Bitmap.createBitmap(surfaceWidth, surfaceHeight, Bitmap.Config.ARGB_8888)
             extraCanvas = Canvas(extraBitmap!!)
             extraCanvas?.drawColor(Color.WHITE)
         }
@@ -94,12 +101,9 @@ class PaintBoxView @JvmOverloads constructor(
         redrawSurface()
     }
 
-    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-        Log.e("PaintBoxView", "surfaceChanged")
-    }
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
 
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        Log.e("PaintBoxView", "surfaceDestroyed")
         extraBitmap?.recycle()
         extraBitmap = null
         extraCanvas = null
@@ -114,6 +118,8 @@ class PaintBoxView @JvmOverloads constructor(
         val pointerIndex = event.actionIndex
         val x = event.getX(pointerIndex)
         val y = event.getY(pointerIndex)
+        if (y < topInsetPx) return false
+
         val pressure = event.getPressure(pointerIndex)
 
         when (event.actionMasked) {
@@ -187,6 +193,8 @@ class PaintBoxView @JvmOverloads constructor(
 
         // Clear surface
         canvas.drawColor(Color.WHITE)
+
+        canvas.clipRect(0, topInsetPx, width, height)
 
         // Draw cached strokes
         extraBitmap?.let {
@@ -292,36 +300,30 @@ class PaintBoxView @JvmOverloads constructor(
                 FileOutputStream("$saveDirectoryPath$saveFilePath").use { outputStream ->
                     bitmap?.compress(Bitmap.CompressFormat.JPEG, 100, outputStream)
                 }
-                Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
             }
             MimeType.JPEG ->  {
                 FileOutputStream("$saveDirectoryPath$saveFilePath").use { outputStream ->
                     bitmap?.compress(Bitmap.CompressFormat.PNG, 100, outputStream)
                 }
-                Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
             }
             MimeType.BMP -> {
                 if(bitmap != null) {
                     exportUtil.createBmpFromBitmap(bitmap, "$saveDirectoryPath$saveFilePath")
-                    Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
                 }
             }
             MimeType.PDF ->  {
                 if(bitmap != null) {
                     exportUtil.createPdfFromBitmap(bitmap, "$saveDirectoryPath$saveFilePath")
-                    Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
                 }
             }
             MimeType.GIF -> {
                 if(bitmap != null) {
                     exportUtil.createGifFromBitmap(gifFrames, saveDirectoryPath, saveFilePath)
-                    Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
                 }
             }
             MimeType.TIFF -> {
                 if(bitmap != null) {
                     exportUtil.createTiffFromBitmap(bitmap, "$saveDirectoryPath$saveFilePath")
-                    Log.e("PaintEditorController", "Image saved to $saveDirectoryPath$saveFilePath")
                 }
             }
         }
@@ -333,7 +335,7 @@ class PaintBoxView @JvmOverloads constructor(
     }
 
     internal fun import(path: String, width: Double?, height: Double?) {
-        if(!isPaintBoxViewEnable) return
+        if (!isPaintBoxViewEnable) return
         val bitmap = BitmapFactory.decodeFile(path)
         val normalizedBitmap = normalizeBitmap(bitmap, maxSize = 2048)
 
@@ -352,12 +354,16 @@ class PaintBoxView @JvmOverloads constructor(
             ExifInterface.ORIENTATION_FLIP_VERTICAL -> matrix.postScale(1f, -1f)
         }
 
-        val finalBitmap =  Bitmap.createBitmap(
-            normalizedBitmap,
-            0,
-            0,
+        val scaledBitmap = normalizedBitmap.scale(
             width?.toInt() ?: normalizedBitmap.width,
-            height?.toInt() ?: normalizedBitmap.height,
+            height?.toInt() ?: normalizedBitmap.height
+        )
+        val finalBitmap = Bitmap.createBitmap(
+            scaledBitmap,
+            0,
+            0,
+            scaledBitmap.width,
+            scaledBitmap.height,
             matrix,
             true
         )
@@ -366,12 +372,10 @@ class PaintBoxView @JvmOverloads constructor(
             extraBitmap?.height != finalBitmap.height
         ) {
             extraBitmap?.recycle()
-            extraBitmap = createBitmap(finalBitmap.width, finalBitmap.height)
+            extraBitmap = createBitmap(surfaceWidth, surfaceHeight)
             extraCanvas = Canvas(extraBitmap!!)
         }
 
-        // Draw imported bitmap
-        extraCanvas?.drawColor(Color.WHITE)
         extraCanvas?.drawBitmap(finalBitmap, 0f, 0f, null)
         actions.add(
             DrawAction.ImageAction(finalBitmap, Matrix())
